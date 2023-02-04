@@ -1,0 +1,17 @@
+cabal-version:      2.4
+name:               extension-usage
+version:            0.1.0.0
+license:            BSD-3-Clause
+author:             Ben Gamari
+maintainer:         ben@smart-cactus.org
+copyright:          (c) 2023 Ben Gamari
+
+executable extension-usage
+    main-is:          Main.hs
+    build-depends:    base,
+                      Cabal ^>= 3.8,
+                      Glob,
+                      containers,
+                      filepath
+    hs-source-dirs:   app
+    default-language: Haskell2010
