@@ -17,12 +17,13 @@ import Control.Concurrent.Async.Pool
 import Data.List (sortBy)
 import Data.Maybe (catMaybes)
 import Data.Ord (comparing)
+import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import System.FilePath.Glob as G
 import System.FilePath
 import GHC.Generics
-import Data.Time.Clock (UTCTime)
+import Data.Time.Clock
 import System.Directory
 
 import Data.Aeson
@@ -52,6 +53,14 @@ instance FromJSON Extension where
 instance ToJSON Extension where
     toJSON = toJSON . display
 
+readPackagesJson :: IO [Pkg]
+readPackagesJson = 
+    BS.readFile "../packages.json" >>= either fail return . eitherDecode
+
+daysAgo :: Int -> IO UTCTime
+daysAgo n = (dt `addUTCTime`) <$> getCurrentTime
+    where dt = nominalDay * realToFrac (-n)
+
 main :: IO ()
 main = do
     pkgs <- readPackages "recent-trees"
@@ -61,18 +70,23 @@ main = do
         , let exts = usedExtensions pkg
         ]
 
-    let hist :: M.Map Extension Int
-        hist = M.fromListWith (+)
-            [ (ext, 1)
-            | pkg <- pkgs
-            , ext <- S.toList $ usedExtensions pkg
-            ]
-    writeFile "ext-hist" $ unlines
-        [ unwords [show ext, show n]
-        | (ext, n) <- sortBy (comparing snd) (M.toList hist)
-        ]
+    writeFile "ext-hist" $ showExtensionHist $ extensionHist pkgs
 
     Data.Aeson.encodeFile "packages.json" pkgs
+
+showExtensionHist :: M.Map Extension Int -> String
+showExtensionHist hist = unlines
+    [ unwords [show ext, show n]
+    | (ext, n) <- sortBy (comparing snd) (M.toList hist)
+    ]
+
+extensionHist :: [Pkg] -> M.Map Extension Int
+extensionHist pkgs = 
+    M.fromListWith (+)
+    [ (ext, 1)
+    | pkg <- pkgs
+    , ext <- S.toList $ usedExtensions pkg
+    ]
 
 readPackages :: FilePath -> IO [Pkg]
 readPackages dir = do
