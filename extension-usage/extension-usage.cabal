@@ -8,10 +8,16 @@ copyright:          (c) 2023 Ben Gamari
 
 executable extension-usage
     main-is:          Main.hs
+    other-modules:    LangPrag
     build-depends:    base,
                       Cabal ^>= 3.8,
                       Glob,
                       containers,
-                      filepath
+                      filepath,
+                      text,
+                      bytestring,
+                      regex-tdfa,
+                      regex-base
     hs-source-dirs:   app
+    ghc-options:      -threaded
     default-language: Haskell2010
