@@ -2,14 +2,20 @@
 
 module Main where
 
+import Distribution.Text
 import Distribution.Simple.PackageDescription (readGenericPackageDescription)
 import Distribution.Types.GenericPackageDescription
-import Distribution.Types.Library (libBuildInfo)
-import Distribution.Types.BuildInfo (BuildInfo(defaultExtensions))
+import Distribution.Types.PackageDescription (PackageDescription(package))
+import Distribution.Types.Library as Cabal (libBuildInfo)
+import Distribution.Types.PackageId (PackageIdentifier(..))
+import qualified Distribution.Types.BuildInfo as Cabal (BuildInfo(defaultExtensions))
 import Distribution.Verbosity
 import Language.Haskell.Extension
 
+import Control.Exception
+import Control.Concurrent.Async.Pool
 import Data.List (sortBy)
+import Data.Maybe (catMaybes)
 import Data.Ord (comparing)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
@@ -24,74 +30,88 @@ import Data.Aeson
 import LangPrag
 
 data Pkg = Pkg { name :: String
-               , usedExtensions :: [String]
+               , version :: String
+               , defaultExtensions :: S.Set Extension
+               , extensionPragmas :: S.Set Extension
                , releaseDate :: UTCTime
                }
-    deriving (Generic)
+    deriving (Show, Generic)
 instance ToJSON Pkg
+instance FromJSON Pkg
+
+usedExtensions :: Pkg -> S.Set Extension
+usedExtensions pkg = defaultExtensions pkg <> extensionPragmas pkg
+
+instance FromJSON Extension where
+    parseJSON v = do
+        s <- parseJSON v
+        case simpleParse s of
+          Just ext -> return ext
+          Nothing  -> fail $ "Failed to parse extension " <> s
+
+instance ToJSON Extension where
+    toJSON = toJSON . display
 
 main :: IO ()
 main = do
-    defExts <- getDefaultExts
-    extPrags <- getExtPrags
-    let usedExts :: M.Map Package (S.Set Extension)
-        usedExts = M.unionWith (<>) defExts extPrags
-
+    pkgs <- readPackages "recent-trees"
     writeFile "pkg-exts" $ unlines
-        [ unwords $ [pkg, show $ S.size exts] ++ [ show ext | EnableExtension ext <- S.toList exts ]
-        | (pkg, exts) <- M.toList usedExts
+        [ unwords $ [name pkg, show $ S.size exts] ++ [ display ext | ext <- S.toList exts ]
+        | pkg <- pkgs
+        , let exts = usedExtensions pkg
         ]
 
-    let hist :: M.Map KnownExtension Int
+    let hist :: M.Map Extension Int
         hist = M.fromListWith (+)
             [ (ext, 1)
-            | exts <- M.elems usedExts
-            , EnableExtension ext <- S.toList exts
+            | pkg <- pkgs
+            , ext <- S.toList $ usedExtensions pkg
             ]
     writeFile "ext-hist" $ unlines
         [ unwords [show ext, show n]
         | (ext, n) <- sortBy (comparing snd) (M.toList hist)
         ]
 
-    cabalFiles <- glob "recent-trees/**/*.cabal"
-    releaseDates <- M.fromList <$> sequence
-        [ do mtime <- getModificationTime cabalFile
-             return (pkg, mtime)
-        | cabalFile <- cabalFiles
-        , let pkg = splitDirectories cabalFile !! 1
-        ]
+    Data.Aeson.encodeFile "packages.json" pkgs
 
-    Data.Aeson.encodeFile "packages.json"
-        [ Pkg { name = pkg
-              , usedExtensions = [ show ext | EnableExtension ext <- S.toList exts ]
-              , releaseDate = mtime
-              }
-        | (pkg, exts) <- M.toList usedExts
-        , let Just mtime = pkg `M.lookup` releaseDates 
-        ]
+readPackages :: FilePath -> IO [Pkg]
+readPackages dir = do
+    pkgs <- listDirectory dir
+    let mkPkg :: FilePath -> IO (Maybe Pkg)
+        mkPkg pkg =
+            handle onErr $ fmap Just $ mkPackage $ dir </> pkg
+          where
+            onErr :: SomeException -> IO (Maybe Pkg)
+            onErr e = Nothing <$ print (pkg, e)
 
-type Package = String
+    withTaskGroup 8 $ \tg -> do
+        catMaybes <$> mapTasks tg (map mkPkg pkgs)
 
-getExtPrags :: IO (M.Map Package (S.Set Extension))
-getExtPrags = do
-    srcFiles <- G.glob "recent-trees/**/*.hs"
-    M.fromListWith (<>) <$> sequence
-        [ do exts <- getModuleExts src
-             return (pkg, S.fromList exts)
-        | src <- srcFiles
-        , let pkg = splitDirectories src !! 1
-        ]
-
-getDefaultExts :: IO (M.Map Package (S.Set Extension))
-getDefaultExts = do
-    cabalFiles <- G.glob "recent-trees/*/*.cabal"
-    M.fromList <$> mapM getPkgDefaultExts cabalFiles
-
-getPkgDefaultExts :: FilePath -> IO (String, S.Set Extension)
-getPkgDefaultExts cabalFile = do
+mkPackage :: FilePath -> IO Pkg
+mkPackage dir = do
+    cabalFiles <- glob $ dir </> "*.cabal"
+    cabalFile <- case cabalFiles of
+                   [] -> fail $ "no cabal file found in " <> dir
+                   [f] -> return f
+                   _ -> fail $ "too many cabal files found in " <> dir
     pd <- readGenericPackageDescription silent cabalFile
     let defExts :: [Extension]
-        defExts = maybe [] (foldMap (defaultExtensions . libBuildInfo)) (condLibrary pd)
-        pkg = splitDirectories cabalFile !! 1
-    return (pkg, S.fromList defExts)
+        defExts = maybe [] (foldMap (Cabal.defaultExtensions . Cabal.libBuildInfo)) (condLibrary pd)
 
+    let pid@(PackageIdentifier name ver) = package $ packageDescription pd
+    let tarball = "tarballs" </> display name </> display pid <.> "tar.gz"
+    mtime <- getModificationTime tarball
+
+    srcFiles <- G.glob $ dir </> "**/*.hs"
+    extPrags <- mconcat <$> sequence
+        [ do exts <- getModuleExts src
+             return $ S.fromList exts
+        | src <- srcFiles
+        ]
+
+    return $ Pkg { name = display name
+                 , version = display ver
+                 , releaseDate = mtime
+                 , defaultExtensions = S.fromList defExts
+                 , extensionPragmas = extPrags
+                 }

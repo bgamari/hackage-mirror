@@ -11,6 +11,8 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString as BS
 
+import Control.Monad (unless)
+import Data.List (partition)
 import Data.Maybe (fromMaybe)
 import Data.Foldable (toList)
 
@@ -30,7 +32,12 @@ decodeHsSource src = do
 
 getModuleExts :: FilePath -> IO [Extension]
 getModuleExts modPath = do
-    parseModuleExts . decodeHsSource <$> BS.readFile modPath
+    exts <- parseModuleExts . decodeHsSource <$> BS.readFile modPath
+    let (unknown, exts') = partition isUnknownExt exts
+        isUnknownExt (UnknownExtension _) = True
+        isUnknownExt _ = False
+    unless (null unknown) $ putStrLn $ "Unknown extensions " ++ show unknown
+    return exts'
 
 parseModuleExts :: T.Text -> [Extension]
 parseModuleExts src =
