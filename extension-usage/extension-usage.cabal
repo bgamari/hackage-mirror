@@ -16,6 +16,9 @@ executable extension-usage
                       filepath,
                       text,
                       bytestring,
+                      aeson,
+                      time,
+                      directory,
                       regex-tdfa,
                       regex-base
     hs-source-dirs:   app

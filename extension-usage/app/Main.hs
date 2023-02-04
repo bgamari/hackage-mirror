@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 module Main where
 
 import Distribution.Simple.PackageDescription (readGenericPackageDescription)
@@ -13,8 +15,20 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import System.FilePath.Glob as G
 import System.FilePath
+import GHC.Generics
+import Data.Time.Clock (UTCTime)
+import System.Directory
+
+import Data.Aeson
 
 import LangPrag
+
+data Pkg = Pkg { name :: String
+               , usedExtensions :: [String]
+               , releaseDate :: UTCTime
+               }
+    deriving (Generic)
+instance ToJSON Pkg
 
 main :: IO ()
 main = do
@@ -37,6 +51,23 @@ main = do
     writeFile "ext-hist" $ unlines
         [ unwords [show ext, show n]
         | (ext, n) <- sortBy (comparing snd) (M.toList hist)
+        ]
+
+    cabalFiles <- glob "recent-trees/**/*.cabal"
+    releaseDates <- M.fromList <$> sequence
+        [ do mtime <- getModificationTime cabalFile
+             return (pkg, mtime)
+        | cabalFile <- cabalFiles
+        , let pkg = splitDirectories cabalFile !! 1
+        ]
+
+    Data.Aeson.encodeFile "packages.json"
+        [ Pkg { name = pkg
+              , usedExtensions = [ show ext | EnableExtension ext <- S.toList exts ]
+              , releaseDate = mtime
+              }
+        | (pkg, exts) <- M.toList usedExts
+        , let Just mtime = pkg `M.lookup` releaseDates 
         ]
 
 type Package = String
